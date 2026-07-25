@@ -20,12 +20,23 @@ const WEATHER_LABEL: Record<Weather, string> = {
   rain: '🌧️ Rain',
 };
 
+const ROLE_ICONS: Record<string, string> = {
+  sprinter: '⚡',
+  tank: '🛡️',
+  trickster: '🦊',
+  scout: '👁️',
+  guardian: '🧱',
+  hunter: '🦅',
+};
+
 function fillRoles(host: HTMLElement, ids: RoleId[], selected: RoleId): void {
   host.innerHTML = ids
     .map((id) => {
       const r = role(id);
-      return `<button class="role${id === selected ? ' on' : ''}" data-role="${id}">
-        <b>${r.name}</b><em>${r.blurb}<br><span style="opacity:.8">${r.ultName} — ${r.ultBlurb}</span></em>
+      const icon = ROLE_ICONS[id as string] || '👤';
+      return `<button class="role${id === selected ? ' on' : ''}" data-role="${id}" data-desc="${r.blurb}" data-ultname="${r.ultName}" data-ultdesc="${r.ultBlurb}">
+        <div class="role-icon">${icon}</div>
+        <b>${r.name}</b>
       </button>`;
     })
     .join('');
@@ -45,6 +56,46 @@ export function setupMenu(
   fillRoles(runnerHost, RUNNER_ROLES, choice.runnerRole);
   fillRoles(catcherHost, CATCHER_ROLES, choice.catcherRole);
 
+  const tooltip = $('game-tooltip');
+  
+  const handleTooltip = (e: MouseEvent) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-role]');
+    if (btn && btn.dataset.desc) {
+      tooltip.innerHTML = `
+        <div class="tt-desc">${btn.dataset.desc}</div>
+        <div class="tt-ult">
+          <b>${btn.dataset.ultname}</b>
+          <span>${btn.dataset.ultdesc}</span>
+        </div>
+      `;
+      tooltip.classList.remove('hidden');
+      
+      const rect = btn.getBoundingClientRect();
+      const ttRect = tooltip.getBoundingClientRect();
+      let top = rect.top - ttRect.height - 15;
+      let left = rect.left + (rect.width / 2) - (ttRect.width / 2);
+      
+      if (top < 10) top = rect.bottom + 15;
+      if (left < 10) left = 10;
+      if (left + ttRect.width > window.innerWidth - 10) left = window.innerWidth - ttRect.width - 10;
+      
+      tooltip.style.top = `${top}px`;
+      tooltip.style.left = `${left}px`;
+    }
+  };
+
+  const hideTooltip = (e: MouseEvent) => {
+    const toElement = e.relatedTarget as HTMLElement;
+    if (!toElement || !toElement.closest('[data-role]')) {
+      tooltip.classList.add('hidden');
+    }
+  };
+
+  runnerHost.addEventListener('mouseover', handleTooltip);
+  catcherHost.addEventListener('mouseover', handleTooltip);
+  runnerHost.addEventListener('mouseout', hideTooltip);
+  catcherHost.addEventListener('mouseout', hideTooltip);
+
   const wire = (host: HTMLElement, set: (id: RoleId) => void) => {
     host.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-role]');
@@ -56,6 +107,27 @@ export function setupMenu(
   };
   wire(runnerHost, (id) => (choice.runnerRole = id));
   wire(catcherHost, (id) => (choice.catcherRole = id));
+
+  const tabsContainer = document.querySelector('.role-tabs');
+  const pickersContainer = $('role-pickers-container');
+  if (tabsContainer && pickersContainer) {
+    tabsContainer.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>('.tab-btn');
+      if (btn) {
+        tabsContainer.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+        btn.classList.add('active');
+        pickersContainer.className = `pickers show-${btn.dataset.target}`;
+      }
+    });
+  }
+
+  const nextBtn = document.getElementById('mobile-next-btn');
+  const panel = document.querySelector('.game-menu-panel');
+  if (nextBtn && panel) {
+    nextBtn.addEventListener('click', () => {
+      panel.classList.add('step-2');
+    });
+  }
 
   const applyWeather = (w: Weather) => {
     choice.weather = w;

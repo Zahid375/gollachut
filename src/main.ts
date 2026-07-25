@@ -1,4 +1,5 @@
 import './style.css';
+import { playClickSound } from './audio';
 
 import { TICK } from './core/constants';
 import { buildVillageMap } from './core/map';
@@ -144,4 +145,15 @@ addEventListener('visibilitychange', () => {
   if (document.hidden) input.read();
 });
 
+document.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest('button') || target.closest('.role')) {
+    playClickSound();
+  }
+});
+
 requestAnimationFrame(frame);
+
+document.fonts.ready.then(() => {
+  document.body.classList.remove('loading');
+});

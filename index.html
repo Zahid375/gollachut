@@ -9,8 +9,18 @@
     <meta name="theme-color" content="#1d2a17" />
     <title>Gollachut: Village Escape</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🏃</text></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Russo+One&display=swap" rel="stylesheet">
+    <style>
+      /* Prevent FOUC before Vite injects main CSS */
+      body.loading {
+        opacity: 0 !important;
+        visibility: hidden !important;
+      }
+    </style>
   </head>
-  <body>
+  <body class="loading">
     <canvas id="gl"></canvas>
 
     <!-- ------------------------------------------------------------- HUD -->
@@ -77,41 +87,66 @@
 
     <!-- ----------------------------------------------------------- menus -->
     <div id="menu" class="overlay">
-      <div class="panel">
-        <h1>Gollachut<span>Village Escape</span></h1>
-        <p class="tagline">
-          Four runners break from the base. Four defenders hold the lines. Reach the safe
-          zone before the whistle.
-        </p>
-
-        <div class="pickers">
-          <div class="picker">
-            <h3>When you run</h3>
-            <div class="roles" id="pick-runner"></div>
+      <div class="panel game-menu-panel">
+        <div class="menu-left">
+          <h1 class="mobile-only mobile-title">Gollachut<span>Village Escape</span></h1>
+          <div class="character-wrapper">
+            <img src="/runner_character.png" alt="Village Runner" class="menu-character" />
           </div>
-          <div class="picker">
-            <h3>When you defend</h3>
-            <div class="roles" id="pick-catcher"></div>
+          <div class="rule-cards">
+            <div class="rule-card">
+              <span class="icon">🏆</span>
+              <div class="rc-text"><b>Best of 3</b><span>Swap Sides Every Round</span></div>
+            </div>
+            <div class="rule-card">
+              <span class="icon">🏃</span>
+              <div class="rc-text"><b>Runners</b><span>Reach Safe Zone to Score</span></div>
+            </div>
+            <div class="rule-card">
+              <span class="icon">🛡️</span>
+              <div class="rc-text"><b>Defenders</b><span>Hold Lines, Tag Runners</span></div>
+            </div>
           </div>
+          <button id="mobile-next-btn" class="mobile-only">Configure Match</button>
         </div>
+        <div class="menu-right">
+          <h1>Gollachut<span>Village Escape</span></h1>
 
-        <div class="picker weatherpick">
-          <h3>Conditions</h3>
-          <div class="roles" id="pick-weather">
-            <button class="role" data-weather="day">☀️ Day</button>
-            <button class="role" data-weather="sunset">🌇 Sunset</button>
-            <button class="role" data-weather="rain">🌧️ Rain</button>
+          <div class="role-tabs mobile-only">
+            <button class="tab-btn active" data-target="runners">Runners</button>
+            <button class="tab-btn" data-target="defenders">Defenders</button>
           </div>
-        </div>
+          <div class="pickers show-runners" id="role-pickers-container">
+            <div class="picker" id="picker-runners">
+              <h3>When you run</h3>
+              <div class="roles" id="pick-runner"></div>
+            </div>
+            <div class="picker" id="picker-defenders">
+              <h3>When you defend</h3>
+              <div class="roles" id="pick-catcher"></div>
+            </div>
+          </div>
 
-        <div class="rules">
-          <b>Best of 3.</b> Sides swap every round. Each runner who reaches the safe zone
-          scores for the attack; every runner tagged or still stranded when time runs out
-          scores for the defence. Defenders own one line each and may not leave it — and
-          standing still on it slows them down.
-        </div>
+          <div class="picker weatherpick">
+            <h3>Conditions</h3>
+            <div class="roles" id="pick-weather">
+              <button class="role" data-weather="day">
+                <div class="role-icon">☀️</div>
+                <b>Day</b>
+              </button>
+              <button class="role" data-weather="sunset">
+                <div class="role-icon">🌇</div>
+                <b>Sunset</b>
+              </button>
+              <button class="role" data-weather="rain">
+                <div class="role-icon">🌧️</div>
+                <b>Rain</b>
+              </button>
+            </div>
+          </div>
 
-        <button id="play">Start match</button>
+          <button id="play">Start Match</button>
+        </div>
       </div>
     </div>
 
@@ -123,6 +158,8 @@
         <button id="rc-next">Next round</button>
       </div>
     </div>
+
+    <div id="game-tooltip" class="hidden"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
