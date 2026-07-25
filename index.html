@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1d2a17" />
+    <title>Gollachut: Village Escape</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🏃</text></svg>" />
+  </head>
+  <body>
+    <canvas id="gl"></canvas>
+
+    <!-- ------------------------------------------------------------- HUD -->
+    <div id="hud" class="hidden">
+      <header id="topbar">
+        <div class="team-score" id="score-blue">
+          <span class="dot blue"></span><span class="label">Blue</span><b>0</b>
+        </div>
+
+        <div id="clockwrap">
+          <div id="timer">1:15</div>
+          <div id="pips"></div>
+          <div id="phase">Line-up</div>
+        </div>
+
+        <div class="team-score" id="score-red">
+          <b>0</b><span class="label">Red</span><span class="dot red"></span>
+        </div>
+      </header>
+
+      <button id="weather" title="Change time of day">☀️ Day</button>
+
+      <div id="banner"><span></span><small></small></div>
+
+      <ul id="feed"></ul>
+
+      <aside id="rightcol">
+        <canvas id="minimap" width="176" height="248"></canvas>
+        <div id="roster"></div>
+      </aside>
+
+      <div id="bars">
+        <div class="rolecard">
+          <div class="rolename" id="role-name">Sprinter</div>
+          <div class="roleside" id="role-side">Runner</div>
+        </div>
+        <div class="bar">
+          <span class="bar-label">Stamina</span>
+          <div class="track"><i id="stamina"></i></div>
+        </div>
+        <div class="bar">
+          <span class="bar-label" id="ult-label">Burst Sprint</span>
+          <div class="track ult"><i id="charge"></i></div>
+        </div>
+      </div>
+
+      <div id="hints">
+        <kbd>WASD</kbd> move <kbd>Shift</kbd> sprint <kbd>Space</kbd> vault
+        <kbd>Q</kbd> fake move <kbd>E</kbd> signal <kbd>F</kbd> ultimate
+      </div>
+    </div>
+
+    <!-- --------------------------------------------------------- touch UI -->
+    <div id="touch" class="hidden">
+      <div id="stick-base"><i id="stick-knob"></i></div>
+      <div id="buttons">
+        <button class="tbtn small" data-act="signal">SIG</button>
+        <button class="tbtn small" data-act="juke">FAKE</button>
+        <button class="tbtn small" data-act="jump">JUMP</button>
+        <button class="tbtn" data-act="sprint">RUN</button>
+        <button class="tbtn ult" data-act="ult">ULT</button>
+      </div>
+    </div>
+
+    <!-- ----------------------------------------------------------- menus -->
+    <div id="menu" class="overlay">
+      <div class="panel">
+        <h1>Gollachut<span>Village Escape</span></h1>
+        <p class="tagline">
+          Four runners break from the base. Four defenders hold the lines. Reach the safe
+          zone before the whistle.
+        </p>
+
+        <div class="pickers">
+          <div class="picker">
+            <h3>When you run</h3>
+            <div class="roles" id="pick-runner"></div>
+          </div>
+          <div class="picker">
+            <h3>When you defend</h3>
+            <div class="roles" id="pick-catcher"></div>
+          </div>
+        </div>
+
+        <div class="picker weatherpick">
+          <h3>Conditions</h3>
+          <div class="roles" id="pick-weather">
+            <button class="role" data-weather="day">☀️ Day</button>
+            <button class="role" data-weather="sunset">🌇 Sunset</button>
+            <button class="role" data-weather="rain">🌧️ Rain</button>
+          </div>
+        </div>
+
+        <div class="rules">
+          <b>Best of 3.</b> Sides swap every round. Each runner who reaches the safe zone
+          scores for the attack; every runner tagged or still stranded when time runs out
+          scores for the defence. Defenders own one line each and may not leave it — and
+          standing still on it slows them down.
+        </div>
+
+        <button id="play">Start match</button>
+      </div>
+    </div>
+
+    <div id="roundcard" class="overlay hidden">
+      <div class="panel small">
+        <h2 id="rc-title">Round over</h2>
+        <p id="rc-sub"></p>
+        <div id="rc-tally"></div>
+        <button id="rc-next">Next round</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
