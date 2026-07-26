@@ -86,6 +86,7 @@ function quitToMenu(): void {
   input.setEnabled(false);
   el('hud').classList.add('hidden');
   el('menu').classList.remove('hidden');
+  audio.stopRunning();
   audio.back();
 }
 
@@ -163,7 +164,8 @@ function frame(now: number): void {
 
   const me = playerActor(world);
   hud.update(world, me);
-  if (!paused) audio.update(world, me, dt);
+  if (paused) audio.stopRunning();
+  else audio.update(world, me, dt, gameMap);
   view.update(world, dt, me ?? null);
 
   // Let the round settle for a beat before the summary card interrupts.
@@ -196,7 +198,7 @@ const menuWorld: World = (() => {
     pings: [],
     radarUntil: 0,
     playerTeam: 'blue',
-    difficulty: 'medium',
+    difficulty: 'easy',
     sides: { blue: 'runner', red: 'catcher' },
     wins: { blue: 0, red: 0 },
     results: [],

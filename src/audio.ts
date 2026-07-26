@@ -4,6 +4,7 @@
 // Browsers refuse to start an AudioContext outside a user gesture, so the context is not
 // created until `unlock()` is called from a real click. Every sound is a no-op before that.
 
+import { footingAt, type Footing, type GameMap } from './core/map';
 import type { Actor, World } from './core/types';
 import type { Weather } from './render/village';
 
@@ -37,6 +38,11 @@ class GameAudio {
   private lastEventId = -1;
   /** Distance the player has run since the last footstep. */
   private stepDist = 0;
+  /** Alternates so left and right feet are not identical. */
+  private stepFoot = 0;
+  /** Strides since the last breath. */
+  private breathCount = 0;
+  private runWind: GainNode | null = null;
   private lastCountdown = -1;
   private lastPhase = '';
   /** Ability timers last seen on the player, so a fresh dodge/hop can be detected. */
@@ -270,9 +276,66 @@ class GameAudio {
     this.tone({ from: 300, to: 520, dur: 0.2, gain: 0.08, type: 'triangle' });
   }
 
-  footstep(): void {
-    const f = 150 + Math.random() * 70;
-    this.noiseBurst(f, 1.1, 0.07, 0.075);
+  /**
+   * One footfall. Two layers — a body thump plus a surface scuff — because a single noise
+   * burst reads as a click rather than a foot. `effort` (0..1) scales with how fast the
+   * player is going so a jog and a sprint do not sound identical.
+   */
+  footstep(surface: Footing = 'ground', effort = 1): void {
+    // Alternating feet: a small pitch offset stops the loop sounding mechanical.
+    this.stepFoot ^= 1;
+    const bias = this.stepFoot ? 1.09 : 0.93;
+    const vary = 0.9 + Math.random() * 0.2;
+    const vol = 0.05 + effort * 0.12;
+
+    if (surface === 'water') {
+      // Splash: bright, fast, with a droplet tail.
+      this.noiseBurst(1500 * bias * vary, 0.9, 0.12, vol * 1.25, 0, 3200);
+      this.noiseBurst(700, 1.4, 0.05, vol * 0.6, 0.03);
+      this.tone({ from: 900 * vary, to: 1600, dur: 0.07, gain: vol * 0.25, type: 'sine', delay: 0.02 });
+    } else if (surface === 'mud') {
+      // Squelch: low, longer, with a downward pitch smear as the foot pulls out.
+      this.noiseBurst(220 * bias * vary, 2.2, 0.16, vol * 1.1, 0, 90);
+      this.tone({ from: 150 * vary, to: 70, dur: 0.13, gain: vol * 0.5, type: 'sine' });
+    } else {
+      // Dry earth: a soft thump under a short grit scuff.
+      this.tone({ from: 105 * bias * vary, to: 55, dur: 0.075, gain: vol * 0.85, type: 'sine' });
+      this.noiseBurst(1900 * vary, 1.1, 0.045, vol * 0.42);
+    }
+  }
+
+  /** Breath between strides. Gets louder and rougher as stamina runs out. */
+  breath(spent: boolean): void {
+    const f = spent ? 480 : 620;
+    this.noiseBurst(f * (0.92 + Math.random() * 0.16), 1.5, spent ? 0.3 : 0.2, spent ? 0.075 : 0.04);
+  }
+
+  /**
+   * Continuous air rush that tracks the player's speed. This is what actually sells the
+   * sense of running between footfalls; without it a sprint is just a faster tap-tap.
+   */
+  private setRunSpeed(speed: number): void {
+    const n = this.ensure();
+    if (!n) return;
+    if (!this.runWind) {
+      const src = n.ctx.createBufferSource();
+      src.buffer = n.noise;
+      src.loop = true;
+      const bp = n.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 900;
+      bp.Q.value = 0.7;
+      const g = n.ctx.createGain();
+      g.gain.value = 0;
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(n.bed);
+      src.start();
+      this.runWind = g;
+    }
+    // Silent below a walk, ramping in over the sprint range.
+    const target = Math.min(0.055, Math.max(0, (speed - 2.2) / 9) * 0.055);
+    this.runWind.gain.setTargetAtTime(target, n.ctx.currentTime, 0.09);
   }
 
   countdown(final: boolean): void {
@@ -288,6 +351,13 @@ class GameAudio {
 
   // ------------------------------------------------------------ frame driver
 
+  /** Cut the running loop dead — pausing, quitting, anything that stops play. */
+  stopRunning(): void {
+    this.setRunSpeed(0);
+    this.stepDist = 99;
+    this.breathCount = 0;
+  }
+
   /** Reset per-round cursors. Call when a round or match starts. */
   resync(w: World): void {
     this.lastEventId = w.eventSeq - 1;
@@ -295,6 +365,8 @@ class GameAudio {
     this.stepDist = 0;
     this.lastJuke = 0;
     this.lastVault = 0;
+    this.breathCount = 0;
+    this.setRunSpeed(0);
   }
 
   /**
@@ -302,7 +374,7 @@ class GameAudio {
    * movement drives footsteps. Reads events by id for the same reason the HUD feed does —
    * `w.events` is capped and shifts, so an index cursor would silently stop firing.
    */
-  update(w: World, player: Actor | undefined, dt: number): void {
+  update(w: World, player: Actor | undefined, dt: number, map: GameMap): void {
     if (!this.n) return;
 
     for (const ev of w.events) {
@@ -345,20 +417,41 @@ class GameAudio {
       this.lastVault = player.vaultUntil;
     }
 
-    // Footsteps for the player only — one per stride of ground actually covered, so they
-    // stay in step at any speed and stop dead when you do.
-    if (player && (player.state === 'active' || player.side === 'catcher') && w.phase === 'live') {
-      const speed = Math.sqrt(player.vel.x * player.vel.x + player.vel.y * player.vel.y);
-      if (speed > 1.2) {
-        this.stepDist += speed * dt;
-        if (this.stepDist >= 1.9) {
-          this.stepDist = 0;
-          this.footstep();
-        }
-      } else {
-        this.stepDist = 1.9; // next move triggers a step immediately
-      }
+    // Running, for the player only. Steps are triggered by ground actually covered rather
+    // than on a timer, so the cadence follows your real speed and stops the instant you do.
+    const running =
+      !!player && w.phase === 'live' && (player.side === 'catcher' || player.state === 'active');
+
+    if (!running || !player) {
+      this.setRunSpeed(0);
+      this.stepDist = 99;
+      return;
     }
+
+    const speed = Math.sqrt(player.vel.x * player.vel.x + player.vel.y * player.vel.y);
+    this.setRunSpeed(speed);
+
+    if (speed <= 1.2) {
+      this.stepDist = 99; // primed, so the first step lands as soon as you move
+      this.breathCount = 0;
+      return;
+    }
+
+    // Stride lengthens a little with pace, so cadence still climbs with speed but tops out
+    // around a believable sprint rather than turning into a machine-gun.
+    const stride = 1.6 + speed * 0.08;
+    this.stepDist += speed * dt;
+    if (this.stepDist < stride) return;
+
+    this.stepDist = 0;
+    const effort = Math.min(1, (speed - 1.2) / 8);
+    this.footstep(footingAt(map, player.pos), effort);
+
+    // Breathe every few strides once you are properly moving; harder when winded.
+    this.breathCount++;
+    const spent = player.exhausted || player.stamina < 20;
+    const every = spent ? 2 : 4;
+    if (speed > 4.5 && this.breathCount % every === 0) this.breath(spent);
   }
 }
 

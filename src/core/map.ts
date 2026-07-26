@@ -119,6 +119,19 @@ export function isVaultable(o: Obstacle): boolean {
   return o.shape === 'circle' && o.drag === 0 && o.r <= VAULT_MAX_R;
 }
 
+export type Footing = 'ground' | 'water' | 'mud';
+
+/** What an actor is standing on, so footsteps can sound like the surface. */
+export function footingAt(map: GameMap, p: Vec2): Footing {
+  for (const o of map.obstacles) {
+    if (o.shape !== 'circle' || o.drag <= 0) continue;
+    const dx = o.x - p.x;
+    const dy = o.y - p.y;
+    if (dx * dx + dy * dy < o.r * o.r) return o.kind === 'pond' ? 'water' : 'mud';
+  }
+  return 'ground';
+}
+
 /** Speed multiplier from any drag zones the actor is standing in. */
 export function terrainDrag(map: GameMap, p: Vec2): number {
   let mul = 1;

@@ -52,7 +52,7 @@ export function setupMenu(
     runnerRole: 'sprinter',
     catcherRole: 'hunter',
     weather: 'day',
-    difficulty: 'medium',
+    difficulty: 'easy',
   };
 
   const runnerHost = $('pick-runner');
