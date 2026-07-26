@@ -1,10 +1,11 @@
 import { botInput } from './ai';
 import {
   ACTOR_R,
-  CAMP_MIN_TRAVEL,
+  CAMP_MIN_SPAN,
   CAMP_PENALTY_MAX,
   CAMP_PENALTY_RATE,
-  CAMP_WINDOW,
+  CAMP_SAMPLE,
+  CAMP_SAMPLES,
   CHARGE_ON_NEAR_MISS,
   CHARGE_ON_TAG,
   CHARGE_RATE,
@@ -17,27 +18,30 @@ import {
   MAX_ROUNDS,
   ROUNDS_TO_WIN,
   ROUND_TIME,
+  SHIELD_IMMUNITY,
   SIGNAL_COOLDOWN,
   SIGNAL_DUR,
   SPRINT_DRAIN,
   SPRINT_MUL,
+  SPRINT_RECOVER_FRAC,
   STAMINA_REGEN_DELAY,
   TOUCH_R,
   VAULT_COST,
   VAULT_DUR,
 } from './constants';
+import type { DifficultyId } from './difficulty';
 import { resolveCollisions, terrainDrag, type GameMap } from './map';
 import { CATCHER_ROLES, RUNNER_ROLES, role } from './roles';
 import {
   clamp,
   clampToField,
+  aiSpeed,
   clampToLane,
   catcherTeam,
   dist,
   isInvisible,
   isUltActive,
   laneY,
-  liveWalls,
   runnerTeam,
   tagRadius,
 } from './rules';
@@ -56,6 +60,7 @@ export interface MatchConfig {
   playerTeam: TeamId;
   runnerRole: RoleId;
   catcherRole: RoleId;
+  difficulty: DifficultyId;
 }
 
 const BOT_NAMES = [
@@ -96,7 +101,10 @@ function makeActor(
     signalAt: 0,
     printAt: 0,
     lockUntil: 0,
+    exhausted: false,
+    immuneUntil: 0,
     campTrail: [],
+    campSampleAt: 0,
     campPenalty: 0,
     camping: false,
     aimBias: 0,
@@ -116,12 +124,15 @@ function buildActors(w: World, cfg: MatchConfig): Actor[] {
   const cTeam = catcherTeam(w);
   const playerRuns = cfg.playerTeam === rTeam;
 
-  // --- runner side: captain plus three team-mates spread across the base
+  // --- runner side: captain plus three team-mates spread across the base.
+  // The spread is sized so the captain can realistically touch all three inside
+  // LINEUP_TIME; widen it and the round always starts on the timer instead, which quietly
+  // retires the touch mechanic.
   const runnerSpots: Array<[number, number]> = [
     [0, FIELD.spawnY - 4],
-    [-8, FIELD.spawnY],
+    [-4.5, FIELD.spawnY],
     [0, FIELD.spawnY],
-    [8, FIELD.spawnY],
+    [4.5, FIELD.spawnY],
   ];
   const runnerRoles: RoleId[] = playerRuns
     ? [cfg.runnerRole, ...RUNNER_ROLES.filter((r) => r !== cfg.runnerRole)]
@@ -184,10 +195,13 @@ export function createWorld(cfg: MatchConfig): World {
     prints: [],
     pings: [],
     radarUntil: 0,
+    playerTeam: cfg.playerTeam,
+    difficulty: cfg.difficulty,
     sides: { blue: 'runner', red: 'catcher' },
     wins: { blue: 0, red: 0 },
     results: [],
     events: [],
+    eventSeq: 0,
     banner: '',
     subBanner: '',
     matchWinner: null,
@@ -197,6 +211,8 @@ export function createWorld(cfg: MatchConfig): World {
 }
 
 export function setupRound(w: World, cfg: MatchConfig): void {
+  w.playerTeam = cfg.playerTeam;
+  w.difficulty = cfg.difficulty;
   const blueRuns = w.roundIndex % 2 === 0;
   w.sides = blueRuns
     ? { blue: 'runner', red: 'catcher' }
@@ -223,8 +239,9 @@ export function nextRound(w: World, cfg: MatchConfig): void {
   setupRound(w, cfg);
 }
 
-function push(w: World, ev: GameEvent): void {
-  w.events.push(ev);
+function push(w: World, ev: Omit<GameEvent, 'id'>): void {
+  (ev as GameEvent).id = w.eventSeq++;
+  w.events.push(ev as GameEvent);
   if (w.events.length > 40) w.events.shift();
 }
 
@@ -268,25 +285,34 @@ function activateUlt(w: World, a: Actor): void {
 function updateCamping(w: World, a: Actor, dt: number): void {
   if (a.side !== 'catcher' || w.phase !== 'live') {
     a.camping = false;
+    a.campTrail.length = 0;
+    a.campSampleAt = 0;
     a.campPenalty = Math.max(0, a.campPenalty - CAMP_PENALTY_RATE * dt);
     return;
   }
 
+  // Samples are taken on a fixed clock and *always* recorded, standing still included.
+  // Sampling only on movement meant a defender who froze completely stopped feeding the
+  // trail, so the check never fired on the one behaviour it exists to punish.
   const trail = a.campTrail;
-  const last = trail[trail.length - 1];
-  if (!last || dist(last, a.pos) > 0.05 || trail.length < 2) {
+  if (w.t >= a.campSampleAt) {
+    a.campSampleAt = w.t + CAMP_SAMPLE;
     trail.push({ x: a.pos.x, y: a.pos.y });
-  }
-  const samples = Math.ceil(CAMP_WINDOW / 0.05);
-  while (trail.length > samples) trail.shift();
+    if (trail.length > CAMP_SAMPLES) trail.shift();
 
-  if (trail.length >= samples) {
-    let travelled = 0;
-    for (let i = 1; i < trail.length; i++) travelled += dist(trail[i - 1], trail[i]);
-    const wasCamping = a.camping;
-    a.camping = travelled < CAMP_MIN_TRAVEL;
-    if (a.camping && !wasCamping) {
-      push(w, { kind: 'camp', t: w.t, actor: a.id, text: `${a.name} is camping — slowing down` });
+    if (trail.length >= CAMP_SAMPLES) {
+      // Width of the stretch of line covered, not distance walked — see CAMP_MIN_SPAN.
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const p of trail) {
+        if (p.x < lo) lo = p.x;
+        if (p.x > hi) hi = p.x;
+      }
+      const wasCamping = a.camping;
+      a.camping = hi - lo < CAMP_MIN_SPAN;
+      if (a.camping && !wasCamping) {
+        push(w, { kind: 'camp', t: w.t, actor: a.id, text: `${a.name} is camping — slowing down` });
+      }
     }
   }
 
@@ -350,9 +376,16 @@ function stepActor(w: World, map: GameMap, a: Actor, inp: PlayerInput, dt: numbe
     }
 
     // --- speed
-    const moveLen = Math.hypot(inp.move.x, inp.move.y);
-    const wantsSprint = inp.sprint && moveLen > 0.15 && a.stamina > 0;
+    const moveLen = Math.sqrt(inp.move.x * inp.move.x + inp.move.y * inp.move.y);
     const freeSprint = a.role === 'sprinter' && isUltActive(w, a);
+
+    // Hysteresis: once winded you stay winded until stamina climbs back over the
+    // recovery threshold. A bare `stamina > 0` test flip-flops every tick at zero and
+    // leaks a permanent partial sprint.
+    if (a.stamina <= 0) a.exhausted = true;
+    else if (a.stamina >= def.staminaMax * SPRINT_RECOVER_FRAC) a.exhausted = false;
+
+    const wantsSprint = inp.sprint && moveLen > 0.15 && (!a.exhausted || freeSprint);
 
     if (wantsSprint && !freeSprint) {
       a.stamina = Math.max(0, a.stamina - SPRINT_DRAIN * dt);
@@ -366,6 +399,7 @@ function stepActor(w: World, map: GameMap, a: Actor, inp: PlayerInput, dt: numbe
     if (a.vaultUntil > w.t) speed *= 1.08;
     speed *= terrainDrag(map, a.pos);
     speed *= 1 - a.campPenalty;
+    speed *= aiSpeed(w, a); // 1.0 for the player and their team-mates
 
     const dashing = a.role === 'hunter' && isUltActive(w, a);
     if (!dashing) {
@@ -385,18 +419,28 @@ function stepActor(w: World, map: GameMap, a: Actor, inp: PlayerInput, dt: numbe
   a.pos.x += a.vel.x * dt;
   a.pos.y += a.vel.y * dt;
 
-  resolveCollisions(map, a.pos, ACTOR_R, a.vaultUntil > w.t);
+  // Passing `a.vel` lets the solver strip the into-surface component, so brushing a house
+  // at an angle slides you along it instead of killing all momentum.
+  resolveCollisions(map, a.pos, ACTOR_R, a.vaultUntil > w.t, a.vel);
 
-  // Bamboo barriers only stop runners.
+  // Bamboo barriers only stop runners. `step()` already pruned expired walls.
   if (a.side === 'runner') {
-    for (const wall of liveWalls(w)) {
+    for (const wall of w.walls) {
+      if (wall.until <= w.t) continue;
       const dx = a.pos.x - wall.x;
       const dy = a.pos.y - wall.y;
       const ox = wall.halfLen + ACTOR_R - Math.abs(dx);
       const oy = 0.7 + ACTOR_R - Math.abs(dy);
       if (ox > 0 && oy > 0) {
-        if (ox < oy) a.pos.x += Math.sign(dx || 1) * ox;
-        else a.pos.y += Math.sign(dy || 1) * oy;
+        if (ox < oy) {
+          const n = Math.sign(dx) || 1;
+          a.pos.x += n * ox;
+          if (a.vel.x * n < 0) a.vel.x = 0;
+        } else {
+          const n = Math.sign(dy) || 1;
+          a.pos.y += n * oy;
+          if (a.vel.y * n < 0) a.vel.y = 0;
+        }
       }
     }
   }
@@ -413,15 +457,14 @@ function stepActor(w: World, map: GameMap, a: Actor, inp: PlayerInput, dt: numbe
     if (w.phase === 'live' && a.state === 'active' && w.t > a.printAt) {
       a.printAt = w.t + 0.34;
       w.prints.push({ x: a.pos.x, y: a.pos.y, until: w.t + 2.6, fake: false });
-      if (a.role === 'trickster' && Math.hypot(a.vel.x, a.vel.y) > 2) {
+      if (a.role === 'trickster' && a.vel.x * a.vel.x + a.vel.y * a.vel.y > 4) {
         const lat = Math.sign(a.vel.x) || 1;
         w.prints.push({ x: a.pos.x - lat * 3.2, y: a.pos.y, until: w.t + 2.6, fake: true });
       }
     }
   }
 
-  const sp = Math.hypot(a.vel.x, a.vel.y);
-  if (sp > 0.4) a.facing = Math.atan2(a.vel.x, a.vel.y);
+  if (a.vel.x * a.vel.x + a.vel.y * a.vel.y > 0.16) a.facing = Math.atan2(a.vel.x, a.vel.y);
 }
 
 // ------------------------------------------------------------------ round
@@ -456,19 +499,33 @@ function goLive(w: World): void {
 function resolveTags(w: World, dt: number): void {
   if (w.phase !== 'live') return;
 
-  for (const c of w.actors) {
-    if (c.side !== 'catcher') continue;
-    const reach = tagRadius(w, c) + ACTOR_R;
+  // Runners are the outer loop so each one resolves at most once per tick. With catchers
+  // outside, a Shield could be burned by the first defender and the now-bare runner tagged
+  // by the next defender in the very same tick.
+  for (const r of w.actors) {
+    if (r.side !== 'runner' || r.state !== 'active') continue;
 
-    for (const r of w.actors) {
-      if (r.side !== 'runner' || r.state !== 'active') continue;
-      if (isInvisible(w, r)) continue;
+    if (r.pos.y >= FIELD.safeFront) {
+      r.state = 'safe';
+      r.resolvedAt = w.t;
+      r.vel.x = 0;
+      r.vel.y = 0;
+      push(w, { kind: 'safe', t: w.t, actor: r.id, text: `${r.name} reached the safe zone` });
+      continue;
+    }
 
+    const hidden = isInvisible(w, r);
+
+    for (const c of w.actors) {
+      if (c.side !== 'catcher') continue;
+      const reach = tagRadius(w, c) + ACTOR_R;
       const d = dist(c.pos, r.pos);
-      if (d < reach) {
+
+      if (d < reach && !hidden && r.immuneUntil <= w.t) {
         if (r.role === 'tank' && isUltActive(w, r)) {
           // Shield eats the tag and shoves the defender off their spot.
           r.ultUntil = 0;
+          r.immuneUntil = w.t + SHIELD_IMMUNITY;
           c.lockUntil = w.t + 0.85;
           const push2 = Math.sign(c.pos.x - r.pos.x) || 1;
           c.vel.x = push2 * 12;
@@ -480,30 +537,27 @@ function resolveTags(w: World, dt: number): void {
           r.vel.y = 0;
           c.charge = Math.min(100, c.charge + CHARGE_ON_TAG);
           push(w, { kind: 'caught', t: w.t, actor: r.id, text: `${c.name} tagged ${r.name}` });
+          break;
         }
-      } else if (d < reach + 2.0) {
+      } else if (d < reach + 2.0 && !hidden) {
         const gain = CHARGE_ON_NEAR_MISS * dt;
         c.charge = Math.min(100, c.charge + gain);
         r.charge = Math.min(100, r.charge + gain);
       }
     }
   }
-
-  for (const r of w.actors) {
-    if (r.side !== 'runner' || r.state !== 'active') continue;
-    if (r.pos.y >= FIELD.safeFront) {
-      r.state = 'safe';
-      r.resolvedAt = w.t;
-      push(w, { kind: 'safe', t: w.t, actor: r.id, text: `${r.name} reached the safe zone` });
-    }
-  }
 }
 
 function endRound(w: World, reason: string): void {
-  const runners = w.actors.filter((a) => a.side === 'runner');
-  const safeCount = runners.filter((r) => r.state === 'safe').length;
-  const caughtCount = runners.filter((r) => r.state === 'caught').length;
-  const containedCount = runners.filter((r) => r.state === 'active' || r.state === 'held').length;
+  let safeCount = 0;
+  let caughtCount = 0;
+  let containedCount = 0;
+  for (const a of w.actors) {
+    if (a.side !== 'runner') continue;
+    if (a.state === 'safe') safeCount++;
+    else if (a.state === 'caught') caughtCount++;
+    else containedCount++;
+  }
 
   const rTeam = runnerTeam(w);
   const cTeam = catcherTeam(w);
@@ -533,18 +587,30 @@ function endRound(w: World, reason: string): void {
 
   if (w.wins[winner] >= ROUNDS_TO_WIN || w.roundIndex + 1 >= MAX_ROUNDS) {
     w.phase = 'matchover';
-    w.matchWinner = w.wins.blue > w.wins.red ? 'blue' : 'red';
+    // Level on rounds (only reachable if MAX_ROUNDS is even) goes to whoever took the last
+    // one, rather than silently defaulting to red.
+    w.matchWinner =
+      w.wins.blue === w.wins.red ? winner : w.wins.blue > w.wins.red ? 'blue' : 'red';
     w.banner = `${w.matchWinner === 'blue' ? 'Blue' : 'Red'} win the match`;
     w.subBanner = `${w.wins.blue} – ${w.wins.red}`;
   }
 }
 
+/** Drops expired entries in place — the filter equivalent without a fresh array per tick. */
+function prune<T extends { until: number }>(list: T[], t: number): void {
+  let n = 0;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].until > t) list[n++] = list[i];
+  }
+  list.length = n;
+}
+
 export function step(w: World, map: GameMap, dt: number, playerInput: PlayerInput): void {
   w.t += dt;
 
-  w.walls = w.walls.filter((x) => x.until > w.t);
-  w.prints = w.prints.filter((x) => x.until > w.t);
-  w.pings = w.pings.filter((x) => x.until > w.t);
+  prune(w.walls, w.t);
+  prune(w.prints, w.t);
+  prune(w.pings, w.t);
 
   if (w.phase === 'lineup') {
     w.lineupClock -= dt;

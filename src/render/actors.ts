@@ -1,10 +1,12 @@
 import * as THREE from 'three';
-import { role } from '../core/roles';
+import { kurtaTint } from '../core/roles';
 import { isInvisible, isUltActive } from '../core/rules';
 import type { Actor, World } from '../core/types';
 import { rFacing, rx } from './space';
 
 const SKIN = 0x9c6b47;
+/** Shared target for the tagged-out desaturation lerp — allocating one per frame was churn. */
+const DIM_TINT = new THREE.Color(0x555555);
 
 interface Rig {
   group: THREE.Group;
@@ -21,7 +23,6 @@ interface Rig {
 }
 
 function makeRig(a: Actor): Rig {
-  const def = role(a.role);
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
@@ -33,7 +34,7 @@ function makeRig(a: Actor): Rig {
     return mm;
   };
 
-  const kurta = m(def.tint);
+  const kurta = m(kurtaTint(a.team, a.role));
   const skin = m(SKIN);
   const lungi = m(a.team === 'blue' ? 0x24406b : 0x6b2424);
 
@@ -130,9 +131,23 @@ export class ActorLayer {
     scene.add(this.root);
   }
 
-  /** Drops every rig — call when a new round rebuilds the actor list. */
+  /**
+   * Drops every rig — call when a new round rebuilds the actor list. Geometries and
+   * materials are GPU-side and are not reclaimed by the JS garbage collector, so they must
+   * be disposed explicitly; without this every round leaked eight full character rigs.
+   */
   reset(): void {
-    for (const rig of this.rigs.values()) this.root.remove(rig.group);
+    for (const rig of this.rigs.values()) {
+      this.root.remove(rig.group);
+      rig.group.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.geometry.dispose();
+        const mat = mesh.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      });
+    }
     this.rigs.clear();
   }
 
@@ -149,7 +164,7 @@ export class ActorLayer {
         this.root.add(rig.group);
       }
 
-      const speed = Math.hypot(a.vel.x, a.vel.y);
+      const speed = Math.sqrt(a.vel.x * a.vel.x + a.vel.y * a.vel.y);
       rig.phase += dt * (2.2 + speed * 1.5);
 
       rig.group.position.set(rx(a.pos.x), 0, a.pos.y);
@@ -198,12 +213,10 @@ export class ActorLayer {
 
       for (const mm of rig.mats) {
         mm.opacity = opacity;
-        mm.transparent = opacity < 1;
+        // `transparent` is baked into the shader program key, so flipping it per frame
+        // would force recompiles. The materials are created transparent and stay that way.
+        if (dim) mm.color.lerp(DIM_TINT, 0.08);
       }
-      const tintTarget = dim ? 0x555555 : 0xffffff;
-      rig.mats.forEach((mm) => {
-        if (dim) mm.color.lerp(new THREE.Color(tintTarget), 0.08);
-      });
 
       rig.shield.visible = a.role === 'tank' && isUltActive(w, a);
       if (rig.shield.visible) rig.shield.rotation.y += dt * 1.6;

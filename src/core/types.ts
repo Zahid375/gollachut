@@ -2,6 +2,8 @@
 // Nothing in core/ may import three.js or touch the DOM — this layer is meant to be
 // lifted onto an authoritative Node server unchanged once netcode lands.
 
+import type { DifficultyId } from './difficulty';
+
 export type TeamId = 'blue' | 'red';
 export type Side = 'runner' | 'catcher';
 export type RoleId = 'sprinter' | 'tank' | 'trickster' | 'scout' | 'guardian' | 'hunter';
@@ -45,8 +47,15 @@ export interface Actor {
   /** Sim time until which this actor cannot act (post-dash recovery, tag stun). */
   lockUntil: number;
 
+  /** True while stamina is spent; blocks sprinting until it has recovered enough. */
+  exhausted: boolean;
+  /** Sim time until which tags cannot land (granted when a Shield pops). */
+  immuneUntil: number;
+
   /** Anti-camping bookkeeping: recent positions plus the current speed penalty. */
   campTrail: Vec2[];
+  /** Sim time the next camp-trail sample is due. Samples are fixed-rate, not per-frame. */
+  campSampleAt: number;
   campPenalty: number;
   camping: boolean;
 
@@ -90,6 +99,8 @@ export type EventKind =
   | 'roundend';
 
 export interface GameEvent {
+  /** Monotonic id. The events array is capped, so consumers must track this, not the index. */
+  id: number;
   kind: EventKind;
   t: number;
   actor?: number;
@@ -121,12 +132,18 @@ export interface World {
   pings: Ping[];
   radarUntil: number;
 
+  /** The team the human is on. Used to decide which bots difficulty applies to. */
+  playerTeam: TeamId;
+  difficulty: DifficultyId;
+
   /** Which side each team is playing this round; swaps every round. */
   sides: Record<TeamId, Side>;
   /** Rounds won. */
   wins: Record<TeamId, number>;
   results: RoundResult[];
   events: GameEvent[];
+  /** Id handed to the next event. Never resets, so the HUD feed cannot desync. */
+  eventSeq: number;
 
   banner: string;
   subBanner: string;

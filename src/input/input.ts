@@ -42,14 +42,20 @@ export class InputSource {
   ) {
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
-      if (!this.enabled) return;
+      // Swallow the game keys even while input is disabled, otherwise Space scrolls the
+      // page and the arrows move the scroll position behind the round-summary card.
       if (KEY_MOVE[e.code] || KEY_EDGE[e.code] || e.code.startsWith('Shift')) e.preventDefault();
+      if (!this.enabled) return;
       this.keys.add(e.code);
       const edge = KEY_EDGE[e.code];
       if (edge) this.edges.add(edge);
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
-    addEventListener('blur', () => this.keys.clear());
+    addEventListener('blur', () => {
+      this.keys.clear();
+      this.edges.clear();
+      this.touchHold.clear();
+    });
 
     // --- floating joystick on the left half of the screen
     touchRoot.addEventListener('pointerdown', (e) => {
@@ -129,7 +135,11 @@ export class InputSource {
 
   read(): PlayerInput {
     const inp = emptyInput();
-    if (!this.enabled) return inp;
+    if (!this.enabled) {
+      // Still drain: a press buffered while disabled must not fire on resume.
+      this.edges.clear();
+      return inp;
+    }
 
     for (const code of this.keys) {
       const v = KEY_MOVE[code];

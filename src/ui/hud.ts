@@ -37,20 +37,34 @@ export class Hud {
   private map = $<HTMLCanvasElement>('minimap');
   private ctx = this.map.getContext('2d') as CanvasRenderingContext2D;
 
-  private feedSeen = 0;
+  /** Id of the last event pushed into the feed. Ids are monotonic and never reused. */
+  private feedSeen = -1;
   private bannerUntil = 0;
   private lastBanner = '';
+  /** Last written value per text node, so we only touch the DOM when something changed. */
+  private text = new Map<HTMLElement, string>();
+  /** Static minimap furniture (ground, terrain, lines) painted once and blitted after. */
+  private mapBase: HTMLCanvasElement | null = null;
+  private mapNextDraw = 0;
+  private rosterScratch: Actor[] = [];
 
   constructor(private gameMap: GameMap) {}
+
+  /** Writes only when the value actually changed — avoids needless layout work. */
+  private setText(el: HTMLElement, value: string): void {
+    if (this.text.get(el) === value) return;
+    this.text.set(el, value);
+    el.textContent = value;
+  }
 
   update(w: World, player: Actor | undefined): void {
     // --- clock and phase
     if (w.phase === 'lineup') {
-      this.timer.textContent = fmt(w.lineupClock);
-      this.phase.textContent = 'Line-up';
+      this.setText(this.timer, fmt(w.lineupClock));
+      this.setText(this.phase, 'Line-up');
     } else {
-      this.timer.textContent = fmt(w.roundClock);
-      this.phase.textContent = w.phase === 'live' ? `Round ${w.roundIndex + 1}` : 'Round over';
+      this.setText(this.timer, fmt(w.roundClock));
+      this.setText(this.phase, w.phase === 'live' ? `Round ${w.roundIndex + 1}` : 'Round over');
     }
     this.timer.classList.toggle('urgent', w.phase === 'live' && w.roundClock <= 15);
 
@@ -63,8 +77,8 @@ export class Hud {
       el.className = r ? r.winner : i === w.roundIndex && w.phase !== 'matchover' ? 'live' : '';
     });
 
-    this.scoreBlue.textContent = String(w.wins.blue);
-    this.scoreRed.textContent = String(w.wins.red);
+    this.setText(this.scoreBlue, String(w.wins.blue));
+    this.setText(this.scoreRed, String(w.wins.red));
 
     // --- banner
     if (w.banner && w.banner !== this.lastBanner) {
@@ -76,8 +90,12 @@ export class Hud {
     this.banner.classList.toggle('show', w.t < this.bannerUntil && w.phase !== 'roundover');
 
     // --- feed
-    while (this.feedSeen < w.events.length) {
-      const ev = w.events[this.feedSeen++];
+    // Keyed on the event id, not the array index: `w.events` is capped at 40 and shifts
+    // once full, which used to leave an index-based cursor pinned at the end forever and
+    // silently killed the feed for the rest of the match.
+    for (const ev of w.events) {
+      if (ev.id <= this.feedSeen) continue;
+      this.feedSeen = ev.id;
       if (ev.kind === 'roundstart' || ev.kind === 'roundend') continue;
       const li = document.createElement('li');
       li.className = ev.kind;
@@ -89,14 +107,14 @@ export class Hud {
     // --- player bars
     if (player) {
       const def = role(player.role);
-      this.roleName.textContent = def.name;
-      this.roleSide.textContent = player.side === 'runner' ? 'Runner' : 'Defender';
-      this.ultLabel.textContent = def.ultName;
-      this.stamina.style.width = `${(player.stamina / def.staminaMax) * 100}%`;
+      this.setText(this.roleName, def.name);
+      this.setText(this.roleSide, player.side === 'runner' ? 'Runner' : 'Defender');
+      this.setText(this.ultLabel, def.ultName);
+      this.setWidth(this.stamina, (player.stamina / def.staminaMax) * 100);
       const pct = isUltActive(w, player)
         ? ((player.ultUntil - w.t) / def.ultDur) * 100
         : (player.charge / def.ultCost) * 100;
-      this.charge.style.width = `${Math.min(100, pct)}%`;
+      this.setWidth(this.charge, Math.min(100, pct));
       this.chargeTrack.classList.toggle(
         'ready',
         player.charge >= def.ultCost || isUltActive(w, player),
@@ -107,39 +125,59 @@ export class Hud {
     this.drawMinimap(w, player);
   }
 
+  /** Bar widths change every frame; quantise so we skip most style writes. */
+  private setWidth(el: HTMLElement, pct: number): void {
+    const value = `${Math.round(Math.max(0, pct) * 2) / 2}%`;
+    if (this.text.get(el) === value) return;
+    this.text.set(el, value);
+    el.style.width = value;
+  }
+
   /** Reset transient UI between rounds. */
   resetFeed(w: World): void {
     this.feed.innerHTML = '';
-    this.feedSeen = w.events.length;
+    this.feedSeen = w.eventSeq - 1;
     this.lastBanner = '';
   }
 
   private drawRoster(w: World, player: Actor | undefined): void {
-    const runners = w.actors.filter((a) => a.side === 'runner');
+    // Chips are built once and then only have their text/class touched. Re-running
+    // innerHTML on every chip every frame meant re-parsing HTML 240x a second.
+    const runners = this.rosterScratch;
+    runners.length = 0;
+    for (const a of w.actors) if (a.side === 'runner') runners.push(a);
+
     if (this.roster.childElementCount !== runners.length) {
-      this.roster.innerHTML = runners.map(() => '<div class="chip"></div>').join('');
+      this.roster.innerHTML = runners
+        .map(() => '<div class="chip"><span></span><span style="opacity:.55"></span><span class="st"></span></div>')
+        .join('');
+      this.text.clear();
     }
-    runners.forEach((r, i) => {
+
+    for (let i = 0; i < runners.length; i++) {
+      const r = runners[i];
       const el = this.roster.children[i] as HTMLElement;
-      el.className = `chip ${r.state}${player && r.id === player.id ? ' me' : ''}`;
-      el.innerHTML = `<span>${r.name}</span><span style="opacity:.55">${
-        role(r.role).name
-      }</span><span class="st"></span>`;
-    });
+      const cls = `chip ${r.state}${player && r.id === player.id ? ' me' : ''}`;
+      if (el.className !== cls) el.className = cls;
+      this.setText(el.children[0] as HTMLElement, r.name);
+      this.setText(el.children[1] as HTMLElement, role(r.role).name);
+    }
   }
 
-  private drawMinimap(w: World, player: Actor | undefined): void {
-    const c = this.ctx;
-    const W = this.map.width;
-    const H = this.map.height;
+  /**
+   * Ground, terrain and the defender lines never move, so they are rasterised once into an
+   * offscreen canvas and blitted each frame instead of being re-stroked from scratch.
+   */
+  private buildMapBase(W: number, H: number): HTMLCanvasElement {
+    const base = document.createElement('canvas');
+    base.width = W;
+    base.height = H;
+    const c = base.getContext('2d') as CanvasRenderingContext2D;
     const pad = 9;
     const fw = FIELD.halfW * 2;
     const fh = FIELD.safeBack - FIELD.baseBack;
-    // Sim +x is screen-right in 3D, so the minimap uses the same orientation.
     const px = (x: number) => pad + ((x + FIELD.halfW) / fw) * (W - pad * 2);
     const py = (y: number) => H - pad - ((y - FIELD.baseBack) / fh) * (H - pad * 2);
-
-    c.clearRect(0, 0, W, H);
 
     c.fillStyle = 'rgba(118,166,63,0.22)';
     c.fillRect(px(-FIELD.halfW), py(FIELD.safeBack), W - pad * 2, py(FIELD.baseBack) - py(FIELD.safeBack));
@@ -150,7 +188,6 @@ export class Hud {
     c.fillStyle = 'rgba(185,138,82,0.35)';
     c.fillRect(px(-FIELD.halfW), py(FIELD.baseFront), W - pad * 2, py(FIELD.baseBack) - py(FIELD.baseFront));
 
-    // terrain
     for (const o of this.gameMap.obstacles) {
       if (o.shape === 'box') {
         c.fillStyle = 'rgba(216,201,164,0.5)';
@@ -173,7 +210,6 @@ export class Hud {
       }
     }
 
-    // defender lines
     c.strokeStyle = 'rgba(201,167,106,0.75)';
     c.lineWidth = 1.5;
     for (const ly of FIELD.lines) {
@@ -182,6 +218,32 @@ export class Hud {
       c.lineTo(px(FIELD.halfW), py(ly));
       c.stroke();
     }
+
+    return base;
+  }
+
+  private drawMinimap(w: World, player: Actor | undefined): void {
+    // 30 Hz is plenty for a small radar and halves the canvas work. Wall clock, not sim
+    // time, so a new match resetting `w.t` to zero cannot stall the redraw.
+    const now = performance.now();
+    if (now < this.mapNextDraw) return;
+    this.mapNextDraw = now + 1000 / 30;
+
+    const c = this.ctx;
+    const W = this.map.width;
+    const H = this.map.height;
+    const pad = 9;
+    const fw = FIELD.halfW * 2;
+    const fh = FIELD.safeBack - FIELD.baseBack;
+    // Sim +x is screen-right in 3D, so the minimap uses the same orientation.
+    const px = (x: number) => pad + ((x + FIELD.halfW) / fw) * (W - pad * 2);
+    const py = (y: number) => H - pad - ((y - FIELD.baseBack) / fh) * (H - pad * 2);
+
+    if (!this.mapBase || this.mapBase.width !== W || this.mapBase.height !== H) {
+      this.mapBase = this.buildMapBase(W, H);
+    }
+    c.clearRect(0, 0, W, H);
+    c.drawImage(this.mapBase, 0, 0);
 
     // bamboo barriers
     c.strokeStyle = '#d8ab55';
@@ -220,13 +282,15 @@ export class Hud {
       const r = a.isPlayer ? 4.5 : 3.2;
       c.beginPath();
       c.arc(px(a.pos.x), py(a.pos.y), r, 0, Math.PI * 2);
+      // Team, not side — the blips have to keep meaning the same thing after a side swap.
+      // Reaching the safe zone still overrides, since that is round-scoring information.
       c.fillStyle = a.isPlayer
         ? '#ffd166'
-        : a.side === 'runner'
-          ? a.state === 'safe'
-            ? '#6ee787'
-            : '#4aa3ff'
-          : '#ff6a52';
+        : a.state === 'safe'
+          ? '#6ee787'
+          : a.team === 'blue'
+            ? '#4aa3ff'
+            : '#ff6a52';
       c.fill();
 
       if (a.isPlayer) {

@@ -1,4 +1,4 @@
-import { FIELD, VAULT_MAX_R } from './constants';
+import { FIELD, SLIP_MAX, SLIP_MIN_PUSH, VAULT_MAX_R } from './constants';
 import type { Vec2 } from './types';
 
 export type ObstacleKind = 'tree' | 'palm' | 'haystack' | 'pot' | 'house' | 'pond' | 'mud';
@@ -124,56 +124,120 @@ export function terrainDrag(map: GameMap, p: Vec2): number {
   let mul = 1;
   for (const o of map.obstacles) {
     if (o.shape !== 'circle' || o.drag <= 0) continue;
-    if (Math.hypot(o.x - p.x, o.y - p.y) < o.r) mul = Math.min(mul, o.drag);
+    const dx = o.x - p.x;
+    const dy = o.y - p.y;
+    if (dx * dx + dy * dy < o.r * o.r) mul = Math.min(mul, o.drag);
   }
   return mul;
 }
 
 /**
- * Pushes `p` out of every solid obstacle it overlaps. Mutates `p`.
- * `vaulting` lets an actor mid-hop pass through small props.
+ * Pushes `p` out of every solid obstacle it overlaps and, when `vel` is supplied, removes
+ * the component of velocity pointing into the surface so the actor slides along it instead
+ * of sticking. Mutates both. `vaulting` lets an actor mid-hop pass through small props.
  */
-export function resolveCollisions(map: GameMap, p: Vec2, radius: number, vaulting: boolean): void {
+export function resolveCollisions(
+  map: GameMap,
+  p: Vec2,
+  radius: number,
+  vaulting: boolean,
+  vel?: Vec2,
+): void {
   for (const o of map.obstacles) {
     if (o.drag > 0) continue;
     if (vaulting && isVaultable(o)) continue;
 
+    // Surface normal of the push, so velocity can be projected onto the tangent.
+    let nx = 0;
+    let ny = 0;
+
     if (o.shape === 'circle') {
       const dx = p.x - o.x;
       const dy = p.y - o.y;
-      const d = Math.hypot(dx, dy);
+      const d2 = dx * dx + dy * dy;
       const min = o.r + radius;
-      if (d < min && d > 1e-6) {
-        p.x = o.x + (dx / d) * min;
-        p.y = o.y + (dy / d) * min;
-      } else if (d <= 1e-6) {
-        p.x = o.x + min;
+      if (d2 >= min * min) continue;
+      const d = Math.sqrt(d2);
+      if (d > 1e-6) {
+        nx = dx / d;
+        ny = dy / d;
+      } else {
+        nx = 1;
       }
+      p.x = o.x + nx * min;
+      p.y = o.y + ny * min;
     } else {
       const dx = p.x - o.x;
       const dy = p.y - o.y;
       const ox = o.hw + radius - Math.abs(dx);
       const oy = o.hh + radius - Math.abs(dy);
-      if (ox > 0 && oy > 0) {
-        if (ox < oy) p.x += Math.sign(dx || 1) * ox;
-        else p.y += Math.sign(dy || 1) * oy;
+      if (ox <= 0 || oy <= 0) continue;
+      if (ox < oy) {
+        nx = Math.sign(dx) || 1;
+        p.x += nx * ox;
+      } else {
+        ny = Math.sign(dy) || 1;
+        p.y += ny * oy;
       }
     }
+
+    if (!vel) continue;
+
+    const into = vel.x * nx + vel.y * ny;
+    if (into >= 0) continue;
+
+    // Strip the into-surface component so momentum along the wall is preserved.
+    vel.x -= into * nx;
+    vel.y -= into * ny;
+
+    // Corner assist: pushing square into a flat face leaves zero tangential velocity, so
+    // the actor would sit against it indefinitely. Nudge them toward the nearer edge, at a
+    // strength proportional to how hard they are pushing.
+    if (into > -SLIP_MIN_PUSH) continue;
+    const tx = -ny;
+    const ty = nx;
+    const along = vel.x * tx + vel.y * ty;
+    if (Math.abs(along) >= SLIP_MAX) continue;
+    const dir = Math.sign((p.x - o.x) * tx + (p.y - o.y) * ty) || 1;
+    const target = dir * Math.min(SLIP_MAX, -into * 0.5);
+    if (Math.abs(target) <= Math.abs(along) && Math.sign(target) === Math.sign(along)) continue;
+    vel.x += (target - along) * tx;
+    vel.y += (target - along) * ty;
   }
 }
 
-/** True if a straight segment from a to b is blocked — used by runner bots to pick gaps. */
+/**
+ * True if a straight segment from a to b is blocked — used by runner bots to pick gaps.
+ * Obstacles are the outer loop with an AABB reject up front, so the sampling inner loop
+ * only runs for the handful of props actually near the segment.
+ */
 export function pathBlocked(map: GameMap, a: Vec2, b: Vec2, radius: number): boolean {
-  const steps = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 1.5));
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const x = a.x + (b.x - a.x) * t;
-    const y = a.y + (b.y - a.y) * t;
-    for (const o of map.obstacles) {
-      if (o.drag > 0) continue;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const steps = Math.max(2, Math.ceil(Math.sqrt(dx * dx + dy * dy) / 1.5));
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxY = Math.max(a.y, b.y);
+
+  for (const o of map.obstacles) {
+    if (o.drag > 0) continue;
+    const ohw = o.shape === 'circle' ? o.r : o.hw;
+    const ohh = o.shape === 'circle' ? o.r : o.hh;
+    const padX = ohw + radius;
+    const padY = ohh + radius;
+    if (o.x + padX < minX || o.x - padX > maxX) continue;
+    if (o.y + padY < minY || o.y - padY > maxY) continue;
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = a.x + dx * t;
+      const y = a.y + dy * t;
       if (o.shape === 'circle') {
-        if (Math.hypot(o.x - x, o.y - y) < o.r + radius) return true;
-      } else if (Math.abs(x - o.x) < o.hw + radius && Math.abs(y - o.y) < o.hh + radius) {
+        const ex = o.x - x;
+        const ey = o.y - y;
+        if (ex * ex + ey * ey < padX * padX) return true;
+      } else if (Math.abs(x - o.x) < padX && Math.abs(y - o.y) < padY) {
         return true;
       }
     }

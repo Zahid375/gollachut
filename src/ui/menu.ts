@@ -1,3 +1,4 @@
+import { DIFFICULTIES, DIFFICULTY_IDS, type DifficultyId } from '../core/difficulty';
 import { CATCHER_ROLES, RUNNER_ROLES, role } from '../core/roles';
 import type { RoleId, World } from '../core/types';
 import type { Weather } from '../render/village';
@@ -12,6 +13,7 @@ export interface MenuChoice {
   runnerRole: RoleId;
   catcherRole: RoleId;
   weather: Weather;
+  difficulty: DifficultyId;
 }
 
 const WEATHER_LABEL: Record<Weather, string> = {
@@ -46,28 +48,50 @@ export function setupMenu(
   onStart: (c: MenuChoice) => void,
   onWeather: (w: Weather) => void,
 ): MenuChoice {
-  const choice: MenuChoice = { runnerRole: 'sprinter', catcherRole: 'hunter', weather: 'day' };
+  const choice: MenuChoice = {
+    runnerRole: 'sprinter',
+    catcherRole: 'hunter',
+    weather: 'day',
+    difficulty: 'medium',
+  };
 
   const runnerHost = $('pick-runner');
   const catcherHost = $('pick-catcher');
   const weatherHost = $('pick-weather');
+  const difficultyHost = $('pick-difficulty');
   const weatherBtn = $<HTMLButtonElement>('weather');
 
   fillRoles(runnerHost, RUNNER_ROLES, choice.runnerRole);
   fillRoles(catcherHost, CATCHER_ROLES, choice.catcherRole);
 
+  // Difficulty reuses the role-button markup so it picks up the same styling and the
+  // same hover tooltip wiring.
+  difficultyHost.innerHTML = DIFFICULTY_IDS.map((id) => {
+    const d = DIFFICULTIES[id];
+    return `<button class="role${id === choice.difficulty ? ' on' : ''}" data-difficulty="${id}" data-desc="${d.blurb}">
+        <div class="role-icon">${d.icon}</div>
+        <b>${d.name}</b>
+      </button>`;
+  }).join('');
+
+  difficultyHost.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-difficulty]');
+    if (!btn) return;
+    Array.from(difficultyHost.querySelectorAll('.role')).forEach((el) => el.classList.remove('on'));
+    btn.classList.add('on');
+    choice.difficulty = btn.dataset.difficulty as DifficultyId;
+  });
+
   const tooltip = $('game-tooltip');
   
   const handleTooltip = (e: MouseEvent) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-role]');
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-desc]');
     if (btn && btn.dataset.desc) {
-      tooltip.innerHTML = `
-        <div class="tt-desc">${btn.dataset.desc}</div>
-        <div class="tt-ult">
-          <b>${btn.dataset.ultname}</b>
-          <span>${btn.dataset.ultdesc}</span>
-        </div>
-      `;
+      // Difficulty buttons carry only a blurb; role buttons also describe their ultimate.
+      const ult = btn.dataset.ultname
+        ? `<div class="tt-ult"><b>${btn.dataset.ultname}</b><span>${btn.dataset.ultdesc}</span></div>`
+        : '';
+      tooltip.innerHTML = `<div class="tt-desc">${btn.dataset.desc}</div>${ult}`;
       tooltip.classList.remove('hidden');
       
       const rect = btn.getBoundingClientRect();
@@ -86,15 +110,15 @@ export function setupMenu(
 
   const hideTooltip = (e: MouseEvent) => {
     const toElement = e.relatedTarget as HTMLElement;
-    if (!toElement || !toElement.closest('[data-role]')) {
+    if (!toElement || !toElement.closest('[data-desc]')) {
       tooltip.classList.add('hidden');
     }
   };
 
-  runnerHost.addEventListener('mouseover', handleTooltip);
-  catcherHost.addEventListener('mouseover', handleTooltip);
-  runnerHost.addEventListener('mouseout', hideTooltip);
-  catcherHost.addEventListener('mouseout', hideTooltip);
+  for (const host of [runnerHost, catcherHost, difficultyHost]) {
+    host.addEventListener('mouseover', handleTooltip);
+    host.addEventListener('mouseout', hideTooltip);
+  }
 
   const wire = (host: HTMLElement, set: (id: RoleId) => void) => {
     host.addEventListener('click', (e) => {
@@ -150,11 +174,8 @@ export function setupMenu(
 
   applyWeather('day');
 
-  $('play').addEventListener('click', () => {
-    $('menu').classList.add('hidden');
-    $('hud').classList.remove('hidden');
-    onStart(choice);
-  });
+  // main.ts owns the menu/HUD visibility swap, since quitting has to reverse it.
+  $('play').addEventListener('click', () => onStart(choice));
 
   return choice;
 }
@@ -165,12 +186,18 @@ export class RoundCard {
   private sub = $('rc-sub');
   private tally = $('rc-tally');
   private next = $<HTMLButtonElement>('rc-next');
+  private menuBtn = $<HTMLButtonElement>('rc-menu');
   private handler: (() => void) | null = null;
 
-  constructor() {
+  constructor(onQuit: () => void) {
     this.next.addEventListener('click', () => {
       this.hide();
       this.handler?.();
+    });
+    this.menuBtn.addEventListener('click', () => {
+      this.hide();
+      this.handler = null;
+      onQuit();
     });
   }
 
@@ -195,6 +222,44 @@ export class RoundCard {
       <div class="row"><span>Round points — attack vs defence</span><b>${r.runnerPoints} – ${r.catcherPoints}</b></div>`;
 
     this.next.textContent = over ? 'Play again' : 'Next round';
+    this.root.classList.remove('hidden');
+  }
+
+  hide(): void {
+    this.root.classList.add('hidden');
+  }
+
+  get visible(): boolean {
+    return !this.root.classList.contains('hidden');
+  }
+}
+
+/**
+ * In-match pause. Owns nothing about the simulation — main.ts freezes the fixed-step loop
+ * for as long as this is visible, the same way it already does for the round card.
+ */
+export class PauseMenu {
+  private root = $('pausemenu');
+  private sub = $('pm-sub');
+
+  constructor(opts: { onResume: () => void; onRestart: () => void; onQuit: () => void }) {
+    $('pm-resume').addEventListener('click', () => {
+      this.hide();
+      opts.onResume();
+    });
+    $('pm-restart').addEventListener('click', () => {
+      this.hide();
+      opts.onRestart();
+    });
+    $('pm-quit').addEventListener('click', () => {
+      this.hide();
+      opts.onQuit();
+    });
+  }
+
+  show(w: World): void {
+    const side = w.sides[w.playerTeam] === 'runner' ? 'running' : 'defending';
+    this.sub.textContent = `Round ${w.roundIndex + 1} — you are ${side}. Blue ${w.wins.blue} – ${w.wins.red} Red.`;
     this.root.classList.remove('hidden');
   }
 

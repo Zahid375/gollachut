@@ -1,5 +1,5 @@
 import './style.css';
-import { playClickSound } from './audio';
+import { audio, playClickSound } from './audio';
 
 import { TICK } from './core/constants';
 import { buildVillageMap } from './core/map';
@@ -9,7 +9,7 @@ import { InputSource } from './input/input';
 import { GameView } from './render/scene';
 import type { Weather } from './render/village';
 import { Hud } from './ui/hud';
-import { RoundCard, setupMenu } from './ui/menu';
+import { PauseMenu, RoundCard, setupMenu } from './ui/menu';
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -20,7 +20,12 @@ const el = <T extends HTMLElement>(id: string): T => {
 const gameMap = buildVillageMap();
 const view = new GameView(el<HTMLCanvasElement>('gl'), gameMap, 'day');
 const hud = new Hud(gameMap);
-const roundCard = new RoundCard();
+const roundCard = new RoundCard(() => quitToMenu());
+const pauseMenu = new PauseMenu({
+  onResume: () => {},
+  onRestart: () => startMatch(),
+  onQuit: () => quitToMenu(),
+});
 
 const touchRoot = el('touch');
 const input = new InputSource(el('stick-base'), el('stick-knob'), touchRoot);
@@ -37,14 +42,19 @@ let cardAt = Infinity;
 
 const choice = setupMenu(
   (c) => {
+    audio.unlock();
     config = {
       playerTeam: 'blue',
       runnerRole: c.runnerRole,
       catcherRole: c.catcherRole,
+      difficulty: c.difficulty,
     };
     startMatch();
   },
-  (w: Weather) => view.setWeather(w),
+  (w: Weather) => {
+    view.setWeather(w);
+    audio.setWeather(w);
+  },
 );
 view.setWeather(choice.weather);
 
@@ -54,16 +64,70 @@ function startMatch(): void {
   lastRound = -1;
   cardAt = Infinity;
   roundCard.hide();
+  pauseMenu.hide();
   view.actors.reset();
+  view.snapToPlayer();
   hud.resetFeed(world);
+  audio.resync(world);
+  el('menu').classList.add('hidden');
+  el('hud').classList.remove('hidden');
   input.setEnabled(true);
 }
+
+/** Tear the match down and go back to the main menu. Safe to call from any state. */
+function quitToMenu(): void {
+  world = null;
+  lastRound = -1;
+  cardAt = Infinity;
+  roundCard.hide();
+  pauseMenu.hide();
+  view.actors.reset();
+  view.snapToPlayer();
+  input.setEnabled(false);
+  el('hud').classList.add('hidden');
+  el('menu').classList.remove('hidden');
+  audio.back();
+}
+
+function togglePause(): void {
+  if (!world || roundCard.visible) return;
+  if (world.phase === 'matchover') return;
+  if (pauseMenu.visible) pauseMenu.hide();
+  else pauseMenu.show(world);
+  audio.click();
+}
+
+el('pausebtn').addEventListener('click', togglePause);
+
+const soundBtn = el<HTMLButtonElement>('sound');
+const paintSoundBtn = () => {
+  soundBtn.textContent = audio.muted ? '🔇' : '🔊';
+  soundBtn.classList.toggle('off', audio.muted);
+  soundBtn.title = audio.muted ? 'Unmute sound' : 'Mute sound';
+};
+soundBtn.addEventListener('click', () => {
+  audio.unlock();
+  audio.toggleMute();
+  paintSoundBtn();
+});
+paintSoundBtn();
+
+addEventListener('keydown', (e) => {
+  if (e.code !== 'Escape') return;
+  e.preventDefault();
+  // Esc backs out one layer at a time: pause -> resume, menu -> nothing to leave.
+  if (world) togglePause();
+});
 
 function onRoundBoundary(w: World): void {
   if (w.roundIndex === lastRound) return;
   lastRound = w.roundIndex;
   view.actors.reset();
+  // Sides swap every round, so the spawn can be 40m from where the last round ended.
+  // Cut to it instead of letting the camera glide in from the old position.
+  view.snapToPlayer();
   hud.resetFeed(w);
+  audio.resync(w);
   cardAt = Infinity;
 }
 
@@ -84,7 +148,7 @@ function frame(now: number): void {
 
   onRoundBoundary(world);
 
-  const paused = roundCard.visible;
+  const paused = roundCard.visible || pauseMenu.visible;
   input.setEnabled(!paused);
 
   if (!paused) {
@@ -99,7 +163,8 @@ function frame(now: number): void {
 
   const me = playerActor(world);
   hud.update(world, me);
-  view.update(world, dt, me?.id ?? null);
+  if (!paused) audio.update(world, me, dt);
+  view.update(world, dt, me ?? null);
 
   // Let the round settle for a beat before the summary card interrupts.
   if ((world.phase === 'roundover' || world.phase === 'matchover') && cardAt === Infinity) {
@@ -130,10 +195,13 @@ const menuWorld: World = (() => {
     prints: [],
     pings: [],
     radarUntil: 0,
+    playerTeam: 'blue',
+    difficulty: 'medium',
     sides: { blue: 'runner', red: 'catcher' },
     wins: { blue: 0, red: 0 },
     results: [],
     events: [],
+    eventSeq: 0,
     banner: '',
     subBanner: '',
     matchWinner: null,

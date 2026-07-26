@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { FIELD } from '../core/constants';
 import type { GameMap } from '../core/map';
-import type { World } from '../core/types';
+import type { Actor, World } from '../core/types';
 import { ActorLayer, FxLayer } from './actors';
 import { rx } from './space';
 import { WEATHER, buildVillage, tickRain, type VillageHandles, type Weather } from './village';
@@ -19,6 +19,13 @@ export class GameView {
 
   private village: VillageHandles;
   private focus = new THREE.Vector3(0, 0, 0);
+  /**
+   * Cut rather than glide on the next frame. The focus point persists across rounds, so
+   * without this the camera opens each round parked where the previous one ended and slides
+   * across the field — at a side swap that is a 40m sweep, and the round looks like it
+   * started somewhere other than your spawn.
+   */
+  private snapNext = true;
   private sun: THREE.DirectionalLight;
   /** Sun direction for the current weather, applied relative to the camera focus. */
   private sunOffset = new THREE.Vector3(40, 60, -30);
@@ -56,7 +63,32 @@ export class GameView {
     this.fx = new FxLayer(this.scene);
 
     this.resize();
-    addEventListener('resize', () => this.resize());
+
+    // `resize` alone misses the two things that actually change the viewport on a phone:
+    // the URL bar sliding away, and rotation (which fires before the new size is readable).
+    // Everything is funnelled through one rAF-coalesced handler so a drag-resize on desktop
+    // does not reallocate the drawing buffer dozens of times a second.
+    const schedule = () => this.scheduleResize();
+    addEventListener('resize', schedule);
+    addEventListener('orientationchange', schedule);
+    visualViewport?.addEventListener('resize', schedule);
+    visualViewport?.addEventListener('scroll', schedule);
+  }
+
+  private resizePending = false;
+
+  private scheduleResize(): void {
+    if (this.resizePending) return;
+    this.resizePending = true;
+    requestAnimationFrame(() => {
+      this.resizePending = false;
+      this.resize();
+    });
+  }
+
+  /** Cut the camera straight to the player next frame — call whenever the round resets. */
+  snapToPlayer(): void {
+    this.snapNext = true;
   }
 
   setWeather(w: Weather): void {
@@ -65,18 +97,31 @@ export class GameView {
   }
 
   resize(): void {
-    const w = innerWidth;
-    const h = innerHeight;
-    this.renderer.setSize(w, h, false);
+    // visualViewport tracks the area actually visible once mobile browser chrome is taken
+    // into account; innerWidth/Height do not, which leaves a strip of canvas off-screen.
+    const vv = visualViewport;
+    const w = Math.max(1, Math.round(vv?.width ?? innerWidth));
+    const h = Math.max(1, Math.round(vv?.height ?? innerHeight));
+
+    // Cap the pixel ratio harder on phones — a 3x buffer on a mid-range device costs far
+    // more than it shows, and this scene is fill-rate bound because of the shadow pass.
+    const cap = Math.min(innerWidth, innerHeight) < 700 ? 1.75 : 2;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, cap));
+
+    // `true` so three writes the CSS size too. The drawing buffer and the displayed box
+    // must come from the same measurement or the picture stretches.
+    this.renderer.setSize(w, h, true);
     this.camera.aspect = w / h;
+    // Portrait phones see far less of the field horizontally; widen the lens so the same
+    // amount of pitch stays readable instead of the camera feeling zoomed in.
+    this.camera.fov = this.camera.aspect < 0.8 ? 66 : 52;
     this.camera.updateProjectionMatrix();
   }
 
-  update(world: World, dt: number, playerId: number | null): void {
+  update(world: World, dt: number, me: Actor | null): void {
     this.actors.sync(world, dt);
     this.fx.sync(world);
 
-    const me = world.actors.find((a) => a.id === playerId);
     const targetX = me ? rx(me.pos.x) * 0.55 : 0;
     const targetZ = me ? me.pos.y : 30;
 
@@ -85,7 +130,8 @@ export class GameView {
     const height = wide ? 34 : 24;
     const back = wide ? 34 : 24;
 
-    const k = 1 - Math.exp(-4.5 * dt);
+    const k = this.snapNext ? 1 : 1 - Math.exp(-4.5 * dt);
+    this.snapNext = false;
     this.focus.x += (targetX - this.focus.x) * k;
     this.focus.z += (targetZ - this.focus.z) * k;
 

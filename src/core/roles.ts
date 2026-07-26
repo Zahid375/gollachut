@@ -1,4 +1,4 @@
-import type { RoleId, Side } from './types';
+import type { RoleId, Side, TeamId } from './types';
 
 export interface RoleDef {
   id: RoleId;
@@ -124,4 +124,37 @@ export const CATCHER_ROLES: RoleId[] = ['guardian', 'hunter'];
 
 export function role(id: RoleId): RoleDef {
   return ROLES[id];
+}
+
+/**
+ * Kurta colour, which is the dominant read on a character at distance.
+ *
+ * This must key off the *team*, not the role. Every runner role is blue and every catcher
+ * role is red, so tinting by role meant the colour actually tracked which side you were
+ * playing — and sides swap every round. In the rounds you defended, your own team rendered
+ * red while the opposition rendered blue and stood at the base you had spawned in the round
+ * before, which made it impossible to tell who was who. Team is the identity that has to
+ * stay fixed all match; roles vary by shade inside the team palette.
+ */
+const TEAM_KURTA: Record<TeamId, Record<RoleId, number>> = {
+  blue: {
+    sprinter: 0x2e7dd6,
+    tank: 0x1f5aa8,
+    trickster: 0x4a9be8,
+    scout: 0x63b3f0,
+    guardian: 0x2b6cb0,
+    hunter: 0x3f97e0,
+  },
+  red: {
+    sprinter: 0xd6552e,
+    tank: 0xa8281f,
+    trickster: 0xe0644f,
+    scout: 0xf08a72,
+    guardian: 0xd6432e,
+    hunter: 0xb8332a,
+  },
+};
+
+export function kurtaTint(team: TeamId, id: RoleId): number {
+  return TEAM_KURTA[team][id];
 }
