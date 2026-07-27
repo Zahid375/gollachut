@@ -1092,16 +1092,53 @@ kbd {
   }
 }
 
+/* Small laptops (a 768p screen minus browser chrome lands here). Keep the desktop
+   composition — wide character banner above three rule cards — and compact it, rather than
+   dropping the left column's content. It costs no height either way: the left column is
+   still shorter than the pickers beside it. */
 @media (max-height: 620px) {
-  .rule-cards,
-  .character-wrapper {
-    display: none;
-  }
   .role-icon {
     font-size: 18px;
   }
   .role b {
     font-size: 12px;
+  }
+}
+
+/* Min-width guard keeps this off the narrow mobile wizard, which deliberately drops the
+   rule cards and sizes the character to 45vh in its own breakpoint. */
+@media (max-height: 620px) and (min-width: 861px) {
+  .menu-left {
+    gap: 12px;
+  }
+  .character-wrapper {
+    display: flex;
+    height: clamp(130px, 22vh, 200px);
+  }
+  .rule-cards {
+    display: flex;
+    gap: 7px;
+  }
+  .rule-card {
+    padding: 7px 12px;
+    gap: 10px;
+  }
+  .rule-card .icon {
+    font-size: 19px;
+  }
+  .rule-card .rc-text b {
+    font-size: 13px;
+  }
+  .rule-card .rc-text span {
+    font-size: 11px;
+    margin-top: 1px;
+  }
+}
+
+/* Below this there genuinely is no room — landscape phones, tiny dragged-down windows. */
+@media (max-height: 430px) {
+  .character-wrapper {
+    display: none;
   }
 }
 
