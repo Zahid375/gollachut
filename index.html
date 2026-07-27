@@ -157,6 +157,70 @@
           <button id="play">Start Match</button>
         </div>
       </div>
+
+      <button id="helpbtn" title="How to play" aria-label="How to play">?</button>
+    </div>
+
+    <div id="howto" class="overlay hidden">
+      <div class="panel howto-panel">
+        <h2>How to Play</h2>
+        <p class="howto-lede">
+          Gollachut is a Bangladeshi village chase game. Runners must break through four
+          defender lines to reach the safe zone — defenders must stop them.
+        </p>
+
+        <div class="howto-grid">
+          <section class="howto-card">
+            <h3>🎯 The Goal</h3>
+            <ul>
+              <li>A match is <b>best of 3</b> rounds; sides swap every round.</li>
+              <li>Each round lasts <b>75 seconds</b> after a short line-up.</li>
+              <li>Whoever wins <b>2 rounds</b> takes the match.</li>
+            </ul>
+          </section>
+
+          <section class="howto-card">
+            <h3>🏃 When You Run</h3>
+            <ul>
+              <li>Start at the base and cross all <b>four defender lines</b>.</li>
+              <li>Reach the <b>safe zone</b> at the far end to score.</li>
+              <li>Get tagged and you are held — your captain can touch you free.</li>
+            </ul>
+          </section>
+
+          <section class="howto-card">
+            <h3>🛡️ When You Defend</h3>
+            <ul>
+              <li>You own <b>one line</b> and can only lean a little off it.</li>
+              <li><b>Tag</b> runners as they try to slip past you.</li>
+              <li>Don't camp one spot — patrol your line or you slow down.</li>
+            </ul>
+          </section>
+
+          <section class="howto-card">
+            <h3>⚡ Roles &amp; Ultimate</h3>
+            <ul>
+              <li>Pick a runner role and a defender role before the match.</li>
+              <li>Each role has its own <b>ultimate</b> — hover a role to read it.</li>
+              <li>The ultimate bar fills over time and on near-misses and tags.</li>
+            </ul>
+          </section>
+        </div>
+
+        <h3 class="howto-subhead">Controls</h3>
+        <div class="howto-keys">
+          <div class="keyrow"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div>
+          <div class="keyrow"><kbd>Shift</kbd><span>Sprint (drains stamina)</span></div>
+          <div class="keyrow"><kbd>Space</kbd><span>Vault over small obstacles</span></div>
+          <div class="keyrow"><kbd>Q</kbd><span>Fake move / juke</span></div>
+          <div class="keyrow"><kbd>E</kbd><span>Signal your team</span></div>
+          <div class="keyrow"><kbd>F</kbd><span>Ultimate</span></div>
+          <div class="keyrow"><kbd>Esc</kbd><span>Pause</span></div>
+        </div>
+        <p class="howto-touch">On touch devices use the on-screen stick and the RUN / JUMP / FAKE / SIG / ULT buttons.</p>
+
+        <button id="howto-close">Got it</button>
+      </div>
     </div>
 
     <div id="roundcard" class="overlay hidden">

@@ -44,6 +44,31 @@ function fillRoles(host: HTMLElement, ids: RoleId[], selected: RoleId): void {
     .join('');
 }
 
+/**
+ * "How to play" modal, opened from the help button in the menu's bottom-right corner.
+ * It layers over the menu rather than replacing it, so nothing about the match setup is lost.
+ */
+function setupHowTo(): void {
+  const root = $('howto');
+  const open = () => root.classList.remove('hidden');
+  const close = () => root.classList.add('hidden');
+
+  $('helpbtn').addEventListener('click', open);
+  $('howto-close').addEventListener('click', close);
+
+  // Click the backdrop to dismiss, but not a click that started inside the panel.
+  root.addEventListener('click', (e) => {
+    if (e.target === root) close();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !root.classList.contains('hidden')) {
+      e.stopPropagation();
+      close();
+    }
+  });
+}
+
 export function setupMenu(
   onStart: (c: MenuChoice) => void,
   onWeather: (w: Weather) => void,
@@ -173,6 +198,8 @@ export function setupMenu(
   });
 
   applyWeather('day');
+
+  setupHowTo();
 
   // main.ts owns the menu/HUD visibility swap, since quitting has to reverse it.
   $('play').addEventListener('click', () => onStart(choice));
